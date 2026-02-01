@@ -1,17 +1,32 @@
+import os
+import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-import logging
+from openai import OpenAI
 
-app = FastAPI()
+# ===============================
+# CONFIGURAÇÕES
+# ===============================
 
-# logger básico
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
+
 logging.basicConfig(level=logging.INFO)
 
+app = FastAPI(title="Agente Ângela")
+
+# ===============================
+# STATUS (healthcheck)
+# ===============================
 
 @app.get("/")
 def status():
     return {"status": "Agente Ângela online"}
 
+# ===============================
+# WEBHOOK PRINCIPAL
+# ===============================
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -19,30 +34,62 @@ async def webhook(request: Request):
         payload = await request.json()
         logging.info(f"Webhook recebido: {payload}")
 
-        message = payload.get("message", {})
-        text = message.get("text", "")
-        sender = message.get("from", "desconhecido")
+        # 🔐 Tentando extrair texto da Z-API (sem quebrar)
+        texto = (
+            payload.get("message", {}).get("text")
+            or payload.get("text")
+            or payload.get("body")
+            or "Olá"
+        )
 
-        if not text:
-            return JSONResponse(
-                status_code=200,
-                content={"ok": True, "info": "Mensagem sem texto"}
-            )
+        remetente = (
+            payload.get("from")
+            or payload.get("sender")
+            or "desconhecido"
+        )
 
-        resposta = f"Olá! Recebi sua mensagem: {text}"
+        # ===============================
+        # CHAMADA DA IA
+        # ===============================
+
+        resposta_ia = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Você é Ângela, uma assistente virtual educada, clara, "
+                        "objetiva e profissional. Responda mensagens de WhatsApp "
+                        "de forma humana e acolhedora."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": texto
+                }
+            ]
+        )
+
+        resposta = resposta_ia.choices[0].message.content
+
+        logging.info(f"Resposta IA: {resposta}")
 
         return JSONResponse(
             status_code=200,
             content={
                 "ok": True,
-                "from": sender,
+                "from": remetente,
+                "message_received": texto,
                 "response": resposta
             }
         )
 
     except Exception as e:
-        logging.error(f"Erro no webhook: {e}")
+        logging.error(f"Erro no webhook: {str(e)}")
         return JSONResponse(
             status_code=200,
-            content={"ok": False, "error": "Erro tratado"}
+            content={
+                "ok": False,
+                "error": str(e)
+            }
         )
