@@ -5,7 +5,6 @@ from openai import OpenAI
 import logging
 
 # --- Configuração de Logging ---
-# Para ter visibilidade sobre o que está acontecendo
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -13,18 +12,18 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 # --- Carregamento das Variáveis de Ambiente ---
-# Certifique-se de que suas variáveis estão configuradas no Railway
+# Usando os nomes EXATOS como aparecem no Railway (com suporte para variações)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ZAPI_INSTANCE = os.getenv("ZAPI_INSTANCE")
+ZAPI_INSTANCE = os.getenv("INSTÂNCIA_ZAPI") or os.getenv("INSTANCIA_ZAPI") or os.getenv("ZAPI_INSTANCE")
 ZAPI_TOKEN = os.getenv("ZAPI_TOKEN")
-# O Client-Token é geralmente o mesmo que o Token principal
-ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_TOKEN") 
+ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_TOKEN")
 
 # --- Verificação de Variáveis Essenciais ---
 if not all([OPENAI_API_KEY, ZAPI_INSTANCE, ZAPI_TOKEN, ZAPI_CLIENT_TOKEN]):
     logger.error("ERRO CRÍTICO: Uma ou mais variáveis de ambiente não foram configuradas.")
-    # Em um ambiente de produção, você pode querer que a aplicação pare aqui.
-    # raise ValueError("Variáveis de ambiente essenciais não encontradas.")
+    logger.error(f"OPENAI_API_KEY: {'OK' if OPENAI_API_KEY else 'FALTANDO'}")
+    logger.error(f"ZAPI_INSTANCE: {'OK' if ZAPI_INSTANCE else 'FALTANDO'}")
+    logger.error(f"ZAPI_TOKEN: {'OK' if ZAPI_TOKEN else 'FALTANDO'}")
 
 # --- Inicialização do Cliente OpenAI ---
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -63,7 +62,7 @@ def send_whatsapp_message(phone_number: str, message: str):
     try:
         logger.info(f"Enviando mensagem para {phone_number}..." )
         response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()  # Lança uma exceção para respostas de erro (4xx ou 5xx)
+        response.raise_for_status()
         logger.info(f"Resposta da Z-API: {response.json()}")
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -85,13 +84,9 @@ async def webhook_handler(request: Request):
         data = await request.json()
         logger.info(f"Webhook recebido: {data}")
 
-        # Extrai as informações essenciais do payload do webhook
-        # O campo "phone" contém o número do cliente
-        # O campo "text" dentro de um objeto contém a mensagem
         phone = data.get("phone")
         message_text = data.get("text", {}).get("message")
 
-        # Verifica se a mensagem é válida e não foi enviada por nós mesmos
         if not phone or not message_text or data.get("fromMe"):
             logger.info("Mensagem ignorada (sem texto, sem telefone ou de autoria própria).")
             return {"status": "ignored"}
@@ -109,7 +104,7 @@ async def webhook_handler(request: Request):
                     "content": message_text,
                 },
             ],
-            model="gpt-4.1-mini", # Ou o modelo que preferir
+            model="gpt-4.1-mini",
         )
         
         response_text = chat_completion.choices[0].message.content
@@ -123,7 +118,4 @@ async def webhook_handler(request: Request):
 
     except Exception as e:
         logger.error(f"Erro inesperado no webhook: {e}")
-        # É crucial retornar um erro HTTP que não seja 200 para sinalizar problema,
-        # mas para a Z-API, o ideal é sempre retornar 200 para evitar retentativas.
-        # Apenas logamos o erro e seguimos.
         return {"status": "error", "detail": str(e)}
