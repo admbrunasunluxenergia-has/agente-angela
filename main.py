@@ -11,19 +11,32 @@ logger = logging.getLogger(__name__)
 # --- Inicialização do FastAPI ---
 app = FastAPI()
 
-# --- Carregamento das Variáveis de Ambiente ---
-# Usando os nomes EXATOS como aparecem no Railway (com suporte para variações)
+# --- Carregamento das Variáveis de Ambiente com TODAS as variações possíveis ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ZAPI_INSTANCE = os.getenv("INSTÂNCIA_ZAPI") or os.getenv("INSTANCIA_ZAPI") or os.getenv("ZAPI_INSTANCE")
+
+# Tenta ler a instância Z-API de TODAS as formas possíveis
+ZAPI_INSTANCE = (
+    os.getenv("ZAPI_INSTANCE") or 
+    os.getenv("INSTANCIA_ZAPI") or 
+    os.getenv("INSTÂNCIA_ZAPI") or
+    os.getenv("ID_INSTANCIA_ZAPI") or
+    os.getenv("ID_INSTÂNCIA_ZAPI")
+)
+
 ZAPI_TOKEN = os.getenv("ZAPI_TOKEN")
 ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_TOKEN")
 
+# --- Log detalhado para debug ---
+logger.info(f"=== VERIFICAÇÃO DE VARIÁVEIS ===")
+logger.info(f"OPENAI_API_KEY: {'OK (configurada)' if OPENAI_API_KEY else 'FALTANDO'}")
+logger.info(f"ZAPI_INSTANCE: {ZAPI_INSTANCE if ZAPI_INSTANCE else 'FALTANDO'}")
+logger.info(f"ZAPI_TOKEN: {'OK (configurado)' if ZAPI_TOKEN else 'FALTANDO'}")
+
 # --- Verificação de Variáveis Essenciais ---
-if not all([OPENAI_API_KEY, ZAPI_INSTANCE, ZAPI_TOKEN, ZAPI_CLIENT_TOKEN]):
+if not all([OPENAI_API_KEY, ZAPI_INSTANCE, ZAPI_TOKEN]):
     logger.error("ERRO CRÍTICO: Uma ou mais variáveis de ambiente não foram configuradas.")
-    logger.error(f"OPENAI_API_KEY: {'OK' if OPENAI_API_KEY else 'FALTANDO'}")
-    logger.error(f"ZAPI_INSTANCE: {'OK' if ZAPI_INSTANCE else 'FALTANDO'}")
-    logger.error(f"ZAPI_TOKEN: {'OK' if ZAPI_TOKEN else 'FALTANDO'}")
+    if not ZAPI_INSTANCE:
+        logger.error("ZAPI_INSTANCE não foi encontrada. Tentou: ZAPI_INSTANCE, INSTANCIA_ZAPI, INSTÂNCIA_ZAPI, ID_INSTANCIA_ZAPI, ID_INSTÂNCIA_ZAPI")
 
 # --- Inicialização do Cliente OpenAI ---
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -47,6 +60,10 @@ def send_whatsapp_message(phone_number: str, message: str):
     """
     Envia uma mensagem de texto para um número de WhatsApp usando a Z-API.
     """
+    if not ZAPI_INSTANCE:
+        logger.error("Não é possível enviar mensagem: ZAPI_INSTANCE não configurada")
+        return None
+        
     url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
     
     headers = {
@@ -61,6 +78,7 @@ def send_whatsapp_message(phone_number: str, message: str):
     
     try:
         logger.info(f"Enviando mensagem para {phone_number}..." )
+        logger.info(f"URL: {url}")
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         logger.info(f"Resposta da Z-API: {response.json()}")
@@ -72,7 +90,10 @@ def send_whatsapp_message(phone_number: str, message: str):
 # --- Endpoint de Status ---
 @app.get("/")
 def read_root():
-    return {"status": "Agente Ângela Online"}
+    return {
+        "status": "Agente Ângela Online",
+        "zapi_instance_configured": ZAPI_INSTANCE is not None
+    }
 
 # --- Endpoint Principal (Webhook) ---
 @app.post("/webhook")
@@ -85,10 +106,20 @@ async def webhook_handler(request: Request):
         logger.info(f"Webhook recebido: {data}")
 
         phone = data.get("phone")
-        message_text = data.get("text", {}).get("message")
+        
+        # Tenta pegar a mensagem de texto de várias formas
+        message_text = None
+        if "text" in data and isinstance(data["text"], dict):
+            message_text = data["text"].get("message")
+        elif "image" in data and isinstance(data["image"], dict):
+            message_text = data["image"].get("caption")
+        
+        # Ignora mensagens de grupo
+        is_group = data.get("isGroup", False)
+        from_me = data.get("fromMe", False)
 
-        if not phone or not message_text or data.get("fromMe"):
-            logger.info("Mensagem ignorada (sem texto, sem telefone ou de autoria própria).")
+        if not phone or not message_text or from_me or is_group:
+            logger.info(f"Mensagem ignorada - phone: {phone}, texto: {bool(message_text)}, fromMe: {from_me}, isGroup: {is_group}")
             return {"status": "ignored"}
 
         # 1. Processar com a OpenAI para obter a resposta da Ângela
