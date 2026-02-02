@@ -1,152 +1,36 @@
-import os
-import requests
-from fastapi import FastAPI, Request, HTTPException
-from openai import OpenAI
-import logging
-
-# --- Configuração de Logging ---
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# --- Inicialização do FastAPI ---
-app = FastAPI()
-
-# --- Carregamento das Variáveis de Ambiente com TODAS as variações possíveis ---
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# Tenta ler a instância Z-API de TODAS as formas possíveis
-ZAPI_INSTANCE = (
-    os.getenv("ZAPI_INSTANCE") or 
-    os.getenv("INSTANCIA_ZAPI") or 
-    os.getenv("INSTÂNCIA_ZAPI") or
-    os.getenv("ID_INSTANCIA_ZAPI") or
-    os.getenv("ID_INSTÂNCIA_ZAPI")
-)
-
-ZAPI_TOKEN = os.getenv("ZAPI_TOKEN")
-ZAPI_CLIENT_TOKEN = os.getenv("ZAPI_TOKEN")
-
-# --- Log detalhado para debug ---
-logger.info(f"=== VERIFICAÇÃO DE VARIÁVEIS ===")
-logger.info(f"OPENAI_API_KEY: {'OK (configurada)' if OPENAI_API_KEY else 'FALTANDO'}")
-logger.info(f"ZAPI_INSTANCE: {ZAPI_INSTANCE if ZAPI_INSTANCE else 'FALTANDO'}")
-logger.info(f"ZAPI_TOKEN: {'OK (configurado)' if ZAPI_TOKEN else 'FALTANDO'}")
-
-# --- Verificação de Variáveis Essenciais ---
-if not all([OPENAI_API_KEY, ZAPI_INSTANCE, ZAPI_TOKEN]):
-    logger.error("ERRO CRÍTICO: Uma ou mais variáveis de ambiente não foram configuradas.")
-    if not ZAPI_INSTANCE:
-        logger.error("ZAPI_INSTANCE não foi encontrada. Tentou: ZAPI_INSTANCE, INSTANCIA_ZAPI, INSTÂNCIA_ZAPI, ID_INSTANCIA_ZAPI, ID_INSTÂNCIA_ZAPI")
-
-# --- Inicialização do Cliente OpenAI ---
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-# --- Persona do Agente Ângela ---
-ANGELA_PROMPT = '''
-Você é Ângela, a recepcionista da SUNLUX ENERGIA. 
-Seu perfil é educado, humano, profissional e claro.
-Sua função é o atendimento inicial.
-
-REGRAS OBRIGATÓRIAS:
-1.  NUNCA se apresente como robô ou IA. Aja sempre como uma pessoa real.
-2.  Sempre inicie o PRIMEIRO contato com a frase: "Olá 😊 sou a Ângela, da SUNLUX ENERGIA. Como posso te ajudar?"
-3.  NÃO tome decisões, NÃO prometa prazos, NÃO feche contratos e NÃO defina valores.
-4.  Seu objetivo é entender a intenção do cliente e coletar informações básicas.
-5.  Se o cliente pedir para falar com um humano, reclamar, perguntar sobre fechamento de contrato, valores ou prazos, informe que a equipe responsável entrará em contato.
-'''
-
-# --- Função para Enviar Mensagem via Z-API ---
-def send_whatsapp_message(phone_number: str, message: str):
-    """
-    Envia uma mensagem de texto para um número de WhatsApp usando a Z-API.
-    """
-    if not ZAPI_INSTANCE:
-        logger.error("Não é possível enviar mensagem: ZAPI_INSTANCE não configurada")
-        return None
-        
-    url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Client-Token": ZAPI_CLIENT_TOKEN
-    }
-    
-    payload = {
-        "phone": phone_number,
-        "message": message
-    }
-    
-    try:
-        logger.info(f"Enviando mensagem para {phone_number}..." )
-        logger.info(f"URL: {url}")
-        response = requests.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        logger.info(f"Resposta da Z-API: {response.json()}")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Erro ao enviar mensagem via Z-API para {phone_number}: {e}")
-        return None
-
-# --- Endpoint de Status ---
-@app.get("/")
-def read_root():
-    return {
-        "status": "Agente Ângela Online",
-        "zapi_instance_configured": ZAPI_INSTANCE is not None
-    }
-
-# --- Endpoint Principal (Webhook) ---
-@app.post("/webhook")
-async def webhook_handler(request: Request):
-    """
-    Recebe as mensagens do WhatsApp via Z-API, processa com a IA e responde.
-    """
-    try:
-        data = await request.json()
-        logger.info(f"Webhook recebido: {data}")
-
-        phone = data.get("phone")
-        
-        # Tenta pegar a mensagem de texto de várias formas
-        message_text = None
-        if "text" in data and isinstance(data["text"], dict):
-            message_text = data["text"].get("message")
-        elif "image" in data and isinstance(data["image"], dict):
-            message_text = data["image"].get("caption")
-        
-        # Ignora mensagens de grupo
-        is_group = data.get("isGroup", False)
-        from_me = data.get("fromMe", False)
-
-        if not phone or not message_text or from_me or is_group:
-            logger.info(f"Mensagem ignorada - phone: {phone}, texto: {bool(message_text)}, fromMe: {from_me}, isGroup: {is_group}")
-            return {"status": "ignored"}
-
-        # 1. Processar com a OpenAI para obter a resposta da Ângela
-        logger.info(f"Processando mensagem de {phone} com a OpenAI...")
-        chat_completion = client.chat.completions.create(
-            messages=[
-                {
-                    "role": "system",
-                    "content": ANGELA_PROMPT,
-                },
-                {
-                    "role": "user",
-                    "content": message_text,
-                },
-            ],
-            model="gpt-4.1-mini",
-        )
-        
-        response_text = chat_completion.choices[0].message.content
-        logger.info(f"Resposta gerada pela IA: {response_text}")
-
-        # 2. Enviar a resposta de volta para o cliente via Z-API
-        send_whatsapp_message(phone, response_text)
-
-        # 3. Retornar 200 OK para a Z-API para confirmar o recebimento
-        return {"status": "ok"}
-
-    except Exception as e:
-        logger.error(f"Erro inesperado no webhook: {e}")
-        return {"status": "error", "detail": str(e)}
+Você chegou ao
+início
+da faixa de alcance
+2 de fevereiro de 2026, 14h01
+Contêiner inicial
+INFO:main:ZAPI_TOKEN: OK (configurado)
+ERROR:main:ERRO CRÍTICO: Uma ou mais variáveis ​​de ambiente não foram definidas.
+ERRO:main:ZAPI_INSTANCE não foi encontrado. Tentei: ZAPI_INSTANCE, INSTANCIA_ZAPI, INSTÂNCIA_ZAPI, ID_INSTANCIA_ZAPI, ID_INSTÂNCIA_ZAPI
+INFO: Processo do servidor iniciado [1]
+INFORMAÇÃO: Aguardando inicialização do aplicativo.
+INFORMAÇÃO: Inicialização do aplicativo concluída.
+INFORMAÇÃO: Uvicorn em execução em http://0.0.0.0:8080 (Pressione CTRL+C para sair)
+INFO:main:=== VERIFICAÇÃO DE VARIÁVEIS ===
+INFO:main:OPENAI_API_KEY: OK (configurado)
+INFO:main:ZAPI_INSTANCE:FALTANDO
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': None, 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': True, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': 'AC3A559E4F62E38D509AF01F9DC23998', 'phone': '120363299083720353-group', 'fromMe': False, 'momment': 1770051966001, 'status': 'RECEIVED', 'chatName': 'UsI:Invest Sul-BR 🔰', 'senderPhoto': 'https://pps.whatsapp.net/v/t61.24694-24/508475761_649312104824208_2015058775716891371_n.jpg?ccb=11 -4&oh=01_Q5Aa3gE6V_j3-_T3ScBruYaaSEvQKwx11WOhW_UXXVKLBsbxvA&oe=698DEE98&_nc_sid=5e03e0&_nc_cat=103', 'senderName': 'Joelcio', 'foto': 'https://pps.whatsapp.net/v/t61.24694-24/491879323_1345365186771100_4056989101828852939_n.jpg?ccb=11-4&oh=01_Q5Aa3gHWs1b5PC6c_tN7Muo6Jy9ZvbZInSJ2ryoPMufkh1pmSw&oe=698DEB5F&_nc_sid=5e03e0&_nc_cat=107', 'broadcast': False, 'participantPhone': '554899204662', 'participantLid': None, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'Boa tarde a todos!!\n\nAlgum Parecer de Acesso em Santa Catarina. \nEntre 1,0 e 5\n3,0 MW seria o ideal.\n\nMais até 5,0 MW colocamos na mesa do investidor. \n\nChama no PV.'}, '_traceContext': {'traceId': 'd2170c70d52b6efadbb5c9b9c14c059f', 'spanId': '904e82d77a04cc0a'}}
+INFO:main:Mensagem ignorada - telefone: 120363299083720353-group, texto: True, fromMe: False, isGroup: True
+INFORMAÇÃO: 100.64.0.2:42522 - "POST /webhook HTTP/1.1" 200 OK
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': None, 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': True, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': '3A6CAF881777FC063B49', 'phone': '558699028243-1629982742', 'fromMe': False, 'moment': 1770052150000, 'status': 'RECEIVED', 'chatName': 'ME AJUDA'} ENGENHEIRO 04', 'remetenteFoto': Nenhum, 'nomeremetente': 'Isabele Maria', 'foto': 'https://pps.whatsapp.net/v/t61.24694-24/465801919_3511449389153428_9056471040530049562_n.jpg?ccb=11 -4&oh=01_Q5Aa3gE-Q1yzUKW0b05qeGBoX-GglfWV0ZiPfdhX8cjJFDk3YQ&oe=698DE3B5&_nc_sid=5e03e0&_nc_cat=111', 'transmissão': Falso, 'participantPhone': '559984933761', 'participantLid': Nenhum, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'Boa tarde! Procuro prestador para poda de árvores, com altura específica.'}, '_traceContext': {'traceId': '834e6843221c3592d2aac0e76b20f137', 'spanId': 'ca84c6446877875e'}}
+INFO:main:Mensagem ignorada - telefone: 558699028243-1629982742, texto: True, fromMe: False, isGroup: True
+INFORMAÇÃO: 100.64.0.2:56484 - "POST /webhook HTTP/1.1" 200 OK
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': None, 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': True, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': 'AC9C18A85B54738C47114496EAD6D740', 'phone': '120363299083720353-group', 'fromMe': False, 'moment': 1770052211001, 'status': 'RECEIVED', 'chatName': 'UsI:Invest Sul-BR 🔰', 'senderPhoto': Nenhum, 'senderName': 'Fabiano Bocchi', 'foto': 'https://pps.whatsapp.net/v/t61.24694-24/491879323_1345365186771100_4056989101828852939_n.jpg?ccb=11 -4&oh=01_Q5Aa3gHWs1b5PC6c_tN7Muo6Jy9ZvbZInSJ2ryoPMufkh1pmSw&oe=698DEB5F&_nc_sid=5e03e0&_nc_cat=107', 'broadcast': Falso, 'participantPhone': '555484082802', 'participantLid': None, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'Olá boa tarde, alguém interessado na aquisição de uma usina de 75k na RGE-Rs com terreno, com contrato na Move energia com 0,64 centavos, mais 2 anos de contrato com opção de renovação. Usina ativa há quase 2 anos. Posso me chamar no privado.'}, '_traceContext': {'traceId': 'beb00de9da5cf8cabce7fbb0b5b451a6', 'spanId': '4bb4f964018b8a84'}}
+INFO:main:Mensagem ignorada - telefone: 120363299083720353-group, texto: True, fromMe: False, isGroup: True
+INFORMAÇÃO: 100.64.0.3:62216 - "POST /webhook HTTP/1.1" 200 OK
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': '54357559107678@lid', 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': False, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': '3EB0516646B7D17F7B5A29', 'phone': '558688565521', 'fromMe': True, 'momment': 1770052279000, 'status': 'RECEIVED', 'chatName': 'BRENDA MARINA TORRES', 'senderPhoto': None, 'senderName': 'Bruna Paz', 'photo': 'https://pps.whatsapp.net/v/t61.24694-24/625661114_1390753428866039_7681523727184841268_n.jpg?ccb=11-4&oh=01_Q5Aa3gG614M8L34aGdtJlvGjkjE4H98RUpeGhg7ADZh9AY-ufQ&oe=698DF6EE&_nc_sid=5e03e0&_nc_cat=102', 'broadcast': False, 'participantLid': None, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'oi princesa'}, '_traceContext': {'traceId': 'd2f4c1abbc371d3d70b75e3c814cca9b', 'spanId': 'f738efa9f039eb69'}}
+INFO:main:Mensagem ignorada - telefone: 558688565521, texto: True, fromMe: True, isGroup: False
+INFO: 100.64.0.4:24136 - "POST /webhook HTTP/1.1" 200 OK
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': '54357559107678@lid', 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': False, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': '3EB0D8B8911C5F3761774B', 'phone': '558688565521', 'fromMe': True, 'momment': 1770052284000, 'status': 'RECEIVED', 'chatName': 'BRENDA MARINA TORRES', 'senderPhoto': None, 'senderName': 'Bruna Paz', 'photo': 'https://pps.whatsapp.net/v/t61.24694-24/625661114_1390753428866039_7681523727184841268_n.jpg?ccb=11-4&oh=01_Q5Aa3gG614M8L34aGdtJlvGjkjE4H98RUpeGhg7ADZh9AY-ufQ&oe=698DF6EE&_nc_sid=5e03e0&_nc_cat=102', 'broadcast': False, 'participantLid': None, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'deixa eu ve se tem consulta online?'}, '_traceContext': {'traceId': '0f8db608873b9c275c83bba8861732bb', 'spanId': '90a8e09e9b6f2b1d'}}
+INFO:main:Mensagem ignorada - telefone: 558688565521, texto: True, fromMe: True, isGroup: False
+INFORMAÇÃO: 100.64.0.3:45270 - "POST /webhook HTTP/1.1" 200 OK
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': '54357559107678@lid', 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': False, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': '3EB0690ECC3A08B984098D', 'phone': '558688565521', 'fromMe': True, 'momment': 1770052291000, 'status': 'RECEIVED', 'chatName': 'BRENDA MARINA TORRES', 'senderPhoto': None, 'senderName': 'Bruna Paz', 'photo': 'https://pps.whatsapp.net/v/t61.24694-24/625661114_1390753428866039_7681523727184841268_n.jpg?ccb=11-4&oh=01_Q5Aa3gG614M8L34aGdtJlvGjkjE4H98RUpeGhg7ADZh9AY-ufQ&oe=698DF6EE&_nc_sid=5e03e0&_nc_cat=102', 'broadcast': False, 'participantLid': None, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'pq presencial ta dificil'}, '_traceContext': {'traceId': '32dba62e9679cb1cc42fe0c14cd18e3d', 'spanId': '0f36228f2ab4ffa3'}}
+INFO:main:Mensagem ignorada - telefone: 558688565521, texto: True, fromMe: True, isGroup: False
+INFORMAÇÃO: 100.64.0.5:39206 - "POST /webhook HTTP/1.1" 200 OK
+INFO:main:Webhook recebido: {'isStatusReply': False, 'chatLid': '54357559107678@lid', 'connectedPhone': '558698509371', 'waitingMessage': False, 'isEdit': False, 'isGroup': False, 'isNewsletter': False, 'instanceId': '3E1F5556754D707D83290A427663C12F', 'messageId': '3EB0DEBBEEEC0FF79DE9A9', 'phone': '558688565521', 'fromMe': True, 'momment': 1770052301000, 'status': 'RECEIVED', 'chatName': 'BRENDA MARINA TORRES', 'senderPhoto': None, 'senderName': 'Bruna Paz', 'photo': 'https://pps.whatsapp.net/v/t61.24694-24/625661114_1390753428866039_7681523727184841268_n.jpg?ccb=11-4&oh=01_Q5Aa3gG614M8L34aGdtJlvGjkjE4H98RUpeGhg7ADZh9AY-ufQ&oe=698DF6EE&_nc_sid=5e03e0&_nc_cat=102', 'broadcast': False, 'participantLid': None, 'forwarded': False, 'type': 'ReceivedCallback', 'fromApi': False, 'text': {'message': 'me passa o contato da clínica'}, '_traceContext': {'traceId': 'e9df04d883be4b0c5c0f626cf1d64e5c', 'spanId': '699e6be0ec0c1af8'}}
+INFO:main:Mensagem ignorada - telefone: 558688565521, texto: True, fromMe: True, isGroup: False
+INFO: 100.64.0.6:41672 - "POST /webhook HTTP/1.1" 200 OK
