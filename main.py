@@ -5,7 +5,7 @@ import httpx
 from fastapi import FastAPI, Request, BackgroundTasks, Response
 from typing import Dict, Any
 
-# --- LOGS SIMPLIFICADOS ---
+# --- LOGS ---
 logging.basicConfig(
     level=logging.INFO,
     format='%(name )s - %(levelname)s - %(message)s'
@@ -14,39 +14,40 @@ logger = logging.getLogger("main")
 
 app = FastAPI()
 
-# --- CONFIGURAÇÕES E VARIÁVEIS (BLINDAGEM) ---
-# Tenta pegar o nome padrão (ZAPI_INSTANCE) OU o nome com acento (INSTÂNCIA ZAPI)
-ZAPI_INSTANCE = os.getenv("ZAPI_INSTANCE") or os.getenv("INSTÂNCIA ZAPI") or ""
-ZAPI_TOKEN = os.getenv("ZAPI_TOKEN", "")
-CLIENT_TOKEN = os.getenv("CLIENT_TOKEN", "")
+# --- CARREGAMENTO DE VARIÁVEIS COM LIMPEZA (.strip) ---
+def get_env(key):
+    val = os.getenv(key, "")
+    return val.strip() if val else ""
 
-# URL da API do WhatsApp (Z-API)
+# Tenta pegar ZAPI_INSTANCE ou INSTÂNCIA ZAPI
+ZAPI_INSTANCE = get_env("ZAPI_INSTANCE") or get_env("INSTÂNCIA ZAPI")
+ZAPI_TOKEN = get_env("ZAPI_TOKEN")
+CLIENT_TOKEN = get_env("CLIENT_TOKEN") # Limpa espaços extras
+
+# URL da API
 API_URL = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
 
 @app.on_event("startup" )
 async def startup_check():
-    logger.info(f"🚀 INICIANDO AGENTE (V4 - FLEXÍVEL)...")
+    logger.info(f"🚀 INICIANDO AGENTE (V5 - DEBUG TOKEN)...")
     
-    # Loga qual variável foi encontrada para debug
-    if os.getenv("ZAPI_INSTANCE"):
-        logger.info("Usando variável: ZAPI_INSTANCE")
-    elif os.getenv("INSTÂNCIA ZAPI"):
-        logger.info("Usando variável: INSTÂNCIA ZAPI")
+    # DEBUG CRÍTICO: Mostra se o token está sendo lido (sem revelar o segredo todo)
+    if CLIENT_TOKEN:
+        token_preview = CLIENT_TOKEN[:4] + "..." + CLIENT_TOKEN[-4:]
+        logger.info(f"🔑 CLIENT_TOKEN LIDO: '{token_preview}' (Tamanho: {len(CLIENT_TOKEN)})")
     else:
-        logger.error("❌ Nenhuma variável de Instância encontrada!")
+        logger.error("❌ CLIENT_TOKEN ESTÁ VAZIO NO SISTEMA!")
 
-    logger.info(f"ID DA INSTÂNCIA: {'✅ Carregado' if ZAPI_INSTANCE else '❌ VAZIO'}")
-    logger.info(f"ZAPI_TOKEN: {'✅ Definido' if ZAPI_TOKEN else '❌ AUSENTE'}")
-    logger.info(f"CLIENT_TOKEN: {'✅ Definido' if CLIENT_TOKEN else '⚠️ NÃO DEFINIDO'}")
+    logger.info(f"ZAPI_INSTANCE: {'✅ ' + ZAPI_INSTANCE if ZAPI_INSTANCE else '❌ VAZIA'}")
 
 # --- FUNÇÃO DE ENVIO ---
 async def enviar_resposta(telefone: str, texto: str):
-    if not texto:
-        return
+    if not texto: return
 
+    # Cabeçalho rigoroso
     headers = {
         "Content-Type": "application/json",
-        "Client-Token": CLIENT_TOKEN 
+        "Client-Token": CLIENT_TOKEN
     }
     
     payload = {"phone": telefone, "message": texto}
@@ -54,17 +55,21 @@ async def enviar_resposta(telefone: str, texto: str):
     try:
         async with httpx.AsyncClient( ) as client:
             logger.info(f"📤 ENVIANDO para {telefone}...")
+            # Log dos headers (mascarado) para conferência
+            # logger.info(f"Headers enviados: {headers}") 
+            
             response = await client.post(API_URL, json=payload, headers=headers, timeout=15.0)
             
             if response.status_code in [200, 201]:
-                logger.info(f"✅ SUCESSO NO ENVIO: {response.json()}")
+                logger.info(f"✅ SUCESSO: {response.json()}")
             else:
-                logger.error(f"❌ ERRO API ({response.status_code}): {response.text}")
+                logger.error(f"❌ ERRO Z-API ({response.status_code}): {response.text}")
+                logger.error(f"🔍 DICA: Verifique se o Client Token '{CLIENT_TOKEN[:4]}...' bate com o da Z-API.")
                 
     except Exception as e:
-        logger.error(f"❌ EXCEÇÃO DE REDE: {str(e)}")
+        logger.error(f"❌ ERRO REDE: {str(e)}")
 
-# --- LÓGICA DE PROCESSAMENTO ---
+# --- PROCESSAMENTO ---
 async def processar_mensagem(payload: Dict[str, Any]):
     try:
         telefone = payload.get('phone')
@@ -78,32 +83,25 @@ async def processar_mensagem(payload: Dict[str, Any]):
             logger.info(f"⏭️ Ignorando grupo: {telefone}")
             return
 
-        logger.info(f"🧠 MENSAGEM RECEBIDA de {sender_name}: {texto_msg}")
+        logger.info(f"🧠 MENSAGEM DE {sender_name}: {texto_msg}")
         
-        # --- RESPOSTA DE TESTE ---
-        resposta = f"Olá {sender_name}! Conexão estabelecida com sucesso. Recebi: '{texto_msg}'"
-        
+        resposta = f"Olá {sender_name}! Teste final V5. Recebi: '{texto_msg}'"
         await enviar_resposta(telefone, resposta)
 
     except Exception as e:
-        logger.error(f"❌ ERRO NA LÓGICA DO AGENTE: {str(e)}")
+        logger.error(f"❌ ERRO LÓGICA: {str(e)}")
 
 # --- WEBHOOK ---
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
-        
-        if body.get('status') in ['SENT', 'DELIVERED', 'READ']:
-             return Response(status_code=200)
-
+        if body.get('status') in ['SENT', 'DELIVERED', 'READ']: return Response(status_code=200)
         background_tasks.add_task(processar_mensagem, body)
         return Response(status_code=200)
-        
-    except Exception as e:
-        logger.error(f"❌ ERRO NO WEBHOOK: {str(e)}")
+    except Exception:
         return Response(status_code=200)
 
 @app.get("/")
 def health():
-    return {"status": "online", "version": "fix-v4-flexible-vars"}
+    return {"status": "online", "version": "v5-debug"}
