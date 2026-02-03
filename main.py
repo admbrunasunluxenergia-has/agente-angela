@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from openai import OpenAI
 import logging
 from datetime import datetime
+import json
 
 # Configuração de logging
 logging.basicConfig(
@@ -32,6 +33,82 @@ FALLBACK_MSG = "Olá! Sou a Ângela da SUNLUX ENERGIA. Recebemos sua mensagem e 
 logger.info("="*70)
 logger.info("🚀 AGENTE ÂNGELA - SUNLUX ENERGIA - INICIADO")
 logger.info("="*70)
+
+
+def extract_message_text(data: dict) -> str:
+    """Extrai texto da mensagem de QUALQUER formato Z-API"""
+    
+    # Lista de todos os caminhos possíveis
+    paths_to_try = [
+        # Formato padrão
+        ("text", "message"),
+        # Formato alternativo 1
+        ("message", "text"),
+        ("message", "conversation"),
+        ("message", "extendedTextMessage", "text"),
+        # Formato alternativo 2
+        ("body",),
+        ("content",),
+        # Formato direto
+        ("text",),
+        ("message",),
+        # Formato de notificação
+        ("data", "message"),
+        ("data", "text"),
+        # Formato de evento
+        ("event", "message"),
+        ("event", "text"),
+    ]
+    
+    # Tentar cada caminho
+    for path in paths_to_try:
+        try:
+            value = data
+            for key in path:
+                if isinstance(value, dict):
+                    value = value.get(key)
+                else:
+                    break
+            
+            if value and isinstance(value, str) and value.strip():
+                logger.info(f"✅ Texto extraído via path: {' -> '.join(path)}")
+                return value.strip()
+        except:
+            continue
+    
+    # Se não encontrou, tentar buscar recursivamente
+    def find_text_recursive(obj, depth=0):
+        if depth > 5:  # Limite de profundidade
+            return None
+        
+        if isinstance(obj, dict):
+            # Procurar por chaves que contenham "message" ou "text"
+            for key in obj:
+                if key.lower() in ["message", "text", "body", "content", "conversation"]:
+                    value = obj[key]
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                    elif isinstance(value, dict):
+                        result = find_text_recursive(value, depth + 1)
+                        if result:
+                            return result
+            
+            # Se não encontrou, buscar recursivamente em todos os valores
+            for value in obj.values():
+                if isinstance(value, dict):
+                    result = find_text_recursive(value, depth + 1)
+                    if result:
+                        return result
+        
+        return None
+    
+    result = find_text_recursive(data)
+    if result:
+        logger.info(f"✅ Texto extraído via busca recursiva")
+        return result
+    
+    logger.warning("⚠️ Não foi possível extrair texto da mensagem")
+    return None
 
 
 def send_whatsapp(phone: str, message: str) -> bool:
@@ -145,7 +222,7 @@ def root():
         "status": "online",
         "agent": "Angela",
         "company": "SUNLUX ENERGIA",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -160,24 +237,18 @@ async def webhook(request: Request):
     try:
         # Receber dados
         data = await request.json()
-        logger.info(f"📦 Payload completo: {data}")
         
-        # Extrair informações
-        phone = data.get("phone", "")
+        # Log do payload completo (formatado)
+        logger.info("📦 PAYLOAD COMPLETO:")
+        logger.info(json.dumps(data, indent=2, ensure_ascii=False))
+        
+        # Extrair informações básicas
+        phone = data.get("phone") or data.get("from") or data.get("remoteJid")
         from_me = data.get("fromMe", False)
         is_group = data.get("isGroup", False)
         
-        # Extrair texto da mensagem (múltiplos formatos)
-        message_text = None
-        if "text" in data and isinstance(data["text"], dict):
-            message_text = data["text"].get("message")
-        elif "message" in data:
-            if isinstance(data["message"], dict):
-                message_text = data["message"].get("text") or data["message"].get("conversation")
-            elif isinstance(data["message"], str):
-                message_text = data["message"]
-        elif "body" in data:
-            message_text = data["body"]
+        # Extrair texto da mensagem (ultra-robusto)
+        message_text = extract_message_text(data)
         
         logger.info(f"📞 Telefone: {phone}")
         logger.info(f"💬 Mensagem: {message_text}")
@@ -196,8 +267,9 @@ async def webhook(request: Request):
             logger.warning("⚠️ Ignorado: sem telefone")
             return {"status": "ignored", "reason": "no_phone"}
         
-        if not message_text or message_text.strip() == "":
+        if not message_text:
             logger.warning("⚠️ Ignorado: sem texto")
+            logger.warning("⚠️ PAYLOAD NÃO RECONHECIDO - Envie este log para análise")
             return {"status": "ignored", "reason": "no_text"}
         
         # Processar mensagem
@@ -247,3 +319,5 @@ async def webhook(request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+
+
