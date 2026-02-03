@@ -25,17 +25,18 @@ def get_env(key):
 ZAPI_INSTANCE = get_env("ZAPI_INSTANCE") or get_env("INSTÂNCIA ZAPI")
 ZAPI_TOKEN = get_env("ZAPI_TOKEN")
 
-# SEU TOKEN FIXO (Não precisa mais mudar)
+# SEU TOKEN FIXO Z-API
 CLIENT_TOKEN = "F38393c3b6dc744ef84b0de693e92609eS"
 
 # URL da Z-API
 API_URL = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
 
-# --- CONFIGURAÇÃO OPENAI (CÉREBRO ) ---
-OPENAI_API_KEY = "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"
+# --- CONFIGURAÇÃO OPENAI (SEGURA ) ---
+# Agora ele pega a chave nova que você colocou no Railway!
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 client_openai = OpenAI(api_key=OPENAI_API_KEY)
 
-# --- FUNÇÃO DE SAUDAÇÃO (BOM DIA/TARDE/NOITE) ---
+# --- FUNÇÃO DE SAUDAÇÃO ---
 def get_saudacao():
     try:
         fuso = pytz.timezone('America/Sao_Paulo')
@@ -61,24 +62,18 @@ def get_system_prompt():
     5. Você é inteligente: entenda o contexto da reclamação ou dúvida do cliente sobre energia solar.
     """
 
-# Memória simples (apaga se reiniciar o server)
+# Memória simples
 conversas: Dict[str, List[Dict]] = {}
 
 # --- FUNÇÃO GPT (INTELIGÊNCIA) ---
 def gerar_resposta_ia(telefone, mensagem_usuario):
-    # Recupera histórico ou inicia novo
     prompt_atual = get_system_prompt()
     
-    # Se não tem histórico, começa com o prompt do sistema
     if telefone not in conversas:
         conversas[telefone] = [{"role": "system", "content": prompt_atual}]
     
     historico = conversas[telefone]
-    
-    # Atualiza o prompt do sistema (para garantir saudação correta do horário)
     historico[0] = {"role": "system", "content": prompt_atual}
-    
-    # Adiciona msg do usuário
     historico.append({"role": "user", "content": mensagem_usuario})
     
     try:
@@ -92,10 +87,7 @@ def gerar_resposta_ia(telefone, mensagem_usuario):
         
         resposta_ia = response.choices[0].message.content
         
-        # Adiciona resposta da IA ao histórico
         historico.append({"role": "assistant", "content": resposta_ia})
-        
-        # Mantém apenas as últimas 10 mensagens
         if len(historico) > 11: 
             historico = [historico[0]] + historico[-10:]
             
@@ -120,11 +112,7 @@ async def enviar_resposta(telefone: str, texto: str):
     try:
         async with httpx.AsyncClient( ) as client:
             logger.info(f"📤 ENVIANDO RESPOSTA para {telefone}...")
-            response = await client.post(API_URL, json=payload, headers=headers, timeout=20.0)
-            if response.status_code not in [200, 201]:
-                logger.error(f"❌ ERRO Z-API ({response.status_code}): {response.text}")
-            else:
-                logger.info("✅ Mensagem enviada com sucesso!")
+            await client.post(API_URL, json=payload, headers=headers, timeout=20.0)
     except Exception as e:
         logger.error(f"❌ ERRO ENVIO: {e}")
 
@@ -133,7 +121,6 @@ async def processar_mensagem(payload: Dict[str, Any]):
     try:
         telefone = payload.get('phone')
         
-        # Extração segura do texto
         texto_msg = ""
         if 'text' in payload and isinstance(payload['text'], dict):
             texto_msg = payload['text'].get('message', '')
@@ -145,15 +132,11 @@ async def processar_mensagem(payload: Dict[str, Any]):
         is_group = payload.get('isGroup', False)
         from_me = payload.get('fromMe', False)
 
-        # Ignora mensagens enviadas por mim ou grupos
         if from_me or is_group: return
 
         logger.info(f"📩 Recebido de {telefone}: {texto_msg}")
         
-        # Gera resposta com IA
         resposta = gerar_resposta_ia(telefone, texto_msg)
-        
-        # Envia de volta
         await enviar_resposta(telefone, resposta)
 
     except Exception as e:
@@ -164,10 +147,8 @@ async def processar_mensagem(payload: Dict[str, Any]):
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
-        # Ignora status de entrega (SENT, READ, etc)
         if body.get('status') in ['SENT', 'DELIVERED', 'READ']: 
             return Response(status_code=200)
-            
         background_tasks.add_task(processar_mensagem, body)
         return Response(status_code=200)
     except Exception:
@@ -175,4 +156,4 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/")
 def health():
-    return {"status": "online", "agent": "Angela - Sunlux", "version": "v8-ai-enabled"}
+    return {"status": "online", "agent": "Angela - Sunlux", "version": "v9-secure"}
