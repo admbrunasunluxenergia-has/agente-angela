@@ -1,5 +1,20 @@
 def detect_intent(text):
+    if not isinstance(text, str):
+        return "atendimento"
+
     text = text.lower()
-    if any(word in text for word in ["orçamento", "preço", "valor", "quanto custa"]):
-        return "orcamento"
+
+    palavras_orcamento = [
+        "orçamento",
+        "orcamento",
+        "preço",
+        "valor",
+        "quanto custa",
+        "proposta"
+    ]
+
+    for palavra in palavras_orcamento:
+        if palavra in text:
+            return "orcamento"
+
     return "atendimento"
