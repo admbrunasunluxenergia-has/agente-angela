@@ -10,7 +10,8 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ZAPI_INSTANCE = os.getenv("ZAPI_INSTANCE") or os.getenv("INSTÂNCIA_ZAPI") or "3E1F5556754D707D83290A427663C12F"
 ZAPI_TOKEN = os.getenv("ZAPI_TOKEN")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+# Cliente OpenAI usando a API do Manus (pré-configurada no ambiente)
+client = OpenAI()
 
 def send_whatsapp_message(phone: str, message: str):
     """Envia mensagem via Z-API"""
@@ -29,7 +30,7 @@ def send_whatsapp_message(phone: str, message: str):
 
 @app.get("/")
 def root():
-    return {"status": "online"}
+    return {"status": "online", "agent": "Angela - Sunlux"}
 
 @app.post("/webhook")
 async def webhook(request: Request):
@@ -46,16 +47,20 @@ async def webhook(request: Request):
     if not phone or not message_text or from_me or is_group:
         return {"status": "ignored"}
     
-    # Processa com OpenAI
+    print(f"📩 Mensagem recebida de {phone}: {message_text}")
+    
+    # Processa com a IA (usando API do Manus)
     try:
         completion = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-mini",
             messages=[
-                {"role": "system", "content": "Você é Ângela, atendente da SUNLUX ENERGIA. Seja breve e profissional."},
+                {"role": "system", "content": "Você é Ângela, atendente da SUNLUX ENERGIA. Seja breve, profissional e use emojis moderados."},
                 {"role": "user", "content": message_text}
             ]
         )
         response_text = completion.choices[0].message.content
+        
+        print(f"💬 Resposta gerada: {response_text}")
         
         # Envia resposta
         send_whatsapp_message(phone, response_text)
@@ -64,4 +69,6 @@ async def webhook(request: Request):
     
     except Exception as e:
         print(f"❌ Erro: {e}")
+        # Envia resposta de fallback
+        send_whatsapp_message(phone, "Desculpe, tive um problema técnico. Pode repetir sua mensagem?")
         return {"status": "error", "detail": str(e)}
