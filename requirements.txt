@@ -1,7 +1,5 @@
 fastapi
 uvicorn
-requests
+httpx
 openai
-psycopg2-binary
-python-dotenv
-
+pytz
