@@ -3,157 +3,247 @@ import requests
 from fastapi import FastAPI, Request
 from openai import OpenAI
 import logging
-import json
+from datetime import datetime
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configuração de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# Inicializar FastAPI
+app = FastAPI(title="Agente Ângela - SUNLUX ENERGIA")
 
-ZAPI_INSTANCE = os.getenv("ZAPI_INSTANCE") or "3E1F5556754D707D83290A427663C12F"
-ZAPI_TOKEN = os.getenv("ZAPI_TOKEN")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Credenciais Z-API
+ZAPI_INSTANCE = "3E1F5556754D707D83290A427663C12F"
+ZAPI_TOKEN = "3679EA28835DA95A8E14D35D"
 
-# TEXTO PADRÃO GARANTIDO
-FALLBACK_MESSAGE = "Olá! Sou a Ângela da SUNLUX ENERGIA. Recebemos sua mensagem e em breve um consultor entrará em contato. Como posso ajudar?"
+# Credenciais ClickUp
+CLICKUP_API_KEY = "pk_266489071_UK216278X3QXMH0YCEKHPGHZ2601WK3R"
+CLICKUP_LIST_ID = "901316247221"
 
-logger.info("🚀 AGENTE ÂNGELA - SUNLUX ENERGIA")
-logger.info(f"🔑 ZAPI Token: {'✅' if ZAPI_TOKEN else '❌'}")
-logger.info(f"🤖 OpenAI Key: {'✅' if os.getenv('OPENAI_API_KEY') else '❌'}")
+# Cliente OpenAI (usa variável de ambiente OPENAI_API_KEY)
+client = OpenAI()
 
-def extract_message_text(data: dict) -> str:
-    paths = [
-        data.get("text", {}).get("message"),
-        data.get("message", {}).get("text"),
-        data.get("message", {}).get("conversation"),
-        data.get("body"),
-        data.get("content"),
-        data.get("text"),
-        data.get("message")
-    ]
-    for path in paths:
-        if path and isinstance(path, str) and path.strip():
-            return path.strip()
-    return None
+# Mensagem padrão de fallback
+FALLBACK_MSG = "Olá! Sou a Ângela da SUNLUX ENERGIA. Recebemos sua mensagem e em breve um consultor entrará em contato. Como posso ajudar?"
 
-def send_whatsapp_message(phone: str, message: str) -> dict:
-    """Retorna: {"success": bool, "error_code": int|None, "error_type": str|None}"""
+logger.info("="*70)
+logger.info("🚀 AGENTE ÂNGELA - SUNLUX ENERGIA - INICIADO")
+logger.info("="*70)
+
+
+def send_whatsapp(phone: str, message: str) -> bool:
+    """Envia mensagem via Z-API"""
     url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
-    headers = {"Content-Type": "application/json", "Client-Token": ZAPI_TOKEN}
-    payload = {"phone": phone, "message": message}
     
-    logger.info(f"📤 Enviando: {message[:50]}...")
+    payload = {
+        "phone": phone,
+        "message": message
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
     
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        logger.info(f"📡 Status: {response.status_code}")
+        logger.info(f"📤 Enviando mensagem para {phone}")
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        
+        logger.info(f"📡 Z-API Response: {response.status_code}")
+        logger.info(f"📡 Z-API Body: {response.text[:200]}")
         
         if response.status_code == 200:
-            logger.info("✅ ENVIADO")
-            return {"success": True, "error_code": None, "error_type": None}
-        elif response.status_code == 403:
-            logger.error("❌ ERRO 403: Client-Token inválido")
-            return {"success": False, "error_code": 403, "error_type": "auth"}
+            logger.info("✅ Mensagem enviada com sucesso")
+            return True
         else:
-            logger.error(f"❌ ERRO {response.status_code}")
-            return {"success": False, "error_code": response.status_code, "error_type": "api"}
+            logger.error(f"❌ Erro ao enviar: {response.status_code} - {response.text[:200]}")
+            return False
+            
     except Exception as e:
-        logger.error(f"❌ EXCEÇÃO: {e}")
-        return {"success": False, "error_code": None, "error_type": "network"}
+        logger.error(f"❌ Exceção ao enviar mensagem: {str(e)}")
+        return False
+
+
+def create_clickup_task(name: str, description: str, phone: str) -> bool:
+    """Cria tarefa no ClickUp"""
+    url = f"https://api.clickup.com/api/v2/list/{CLICKUP_LIST_ID}/task"
+    
+    headers = {
+        "Authorization": CLICKUP_API_KEY,
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "name": name,
+        "description": description,
+        "tags": ["whatsapp", "angela"],
+        "priority": 3
+    }
+    
+    try:
+        logger.info(f"📝 Criando tarefa no ClickUp: {name}")
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            task_id = response.json().get("id")
+            logger.info(f"✅ Tarefa criada: {task_id}")
+            return True
+        else:
+            logger.error(f"❌ Erro ao criar tarefa: {response.status_code} - {response.text[:200]}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"❌ Exceção ao criar tarefa: {str(e)}")
+        return False
+
+
+def get_ai_response(user_message: str) -> str:
+    """Obtém resposta da IA"""
+    try:
+        logger.info("🤖 Consultando OpenAI...")
+        
+        completion = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": """Você é Ângela, atendente virtual da SUNLUX ENERGIA.
+
+Sua função:
+- Atender clientes com educação e profissionalismo
+- Responder perguntas sobre energia solar
+- Coletar informações básicas (nome, interesse)
+- Ser breve e objetiva
+- Usar emojis com moderação
+
+Empresa: SUNLUX ENERGIA - Soluções em Energia Solar"""
+                },
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
+            max_tokens=200,
+            temperature=0.7
+        )
+        
+        response = completion.choices[0].message.content
+        logger.info(f"✅ Resposta da IA obtida: {response[:50]}...")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Erro na OpenAI: {str(e)}")
+        return None
+
 
 @app.get("/")
 def root():
-    return {"status": "online", "agent": "Angela", "version": "4.0"}
+    """Health check"""
+    return {
+        "status": "online",
+        "agent": "Angela",
+        "company": "SUNLUX ENERGIA",
+        "version": "1.0.0",
+        "timestamp": datetime.now().isoformat()
+    }
+
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    logger.info("="*60)
-    logger.info("🔔 WEBHOOK")
+    """Recebe webhooks do Z-API"""
+    
+    logger.info("="*70)
+    logger.info("🔔 WEBHOOK RECEBIDO")
     
     try:
+        # Receber dados
         data = await request.json()
-        logger.info(f"📦 PAYLOAD: {json.dumps(data, indent=2)}")
+        logger.info(f"📦 Payload completo: {data}")
         
-        phone = data.get("phone") or data.get("from") or data.get("remoteJid")
-        message_text = extract_message_text(data)
+        # Extrair informações
+        phone = data.get("phone", "")
         from_me = data.get("fromMe", False)
-        is_group = data.get("isGroup", False) or data.get("isGroupMsg", False)
+        is_group = data.get("isGroup", False)
         
-        logger.info(f"📞 De: {phone}")
-        logger.info(f"💬 Texto: {message_text}")
-        logger.info(f"👤 FromMe: {from_me} | Grupo: {is_group}")
+        # Extrair texto da mensagem (múltiplos formatos)
+        message_text = None
+        if "text" in data and isinstance(data["text"], dict):
+            message_text = data["text"].get("message")
+        elif "message" in data:
+            if isinstance(data["message"], dict):
+                message_text = data["message"].get("text") or data["message"].get("conversation")
+            elif isinstance(data["message"], str):
+                message_text = data["message"]
+        elif "body" in data:
+            message_text = data["body"]
         
-        # VALIDAÇÕES
-        if not phone:
-            logger.warning("⚠️ IGNORADO: Sem telefone")
-            return {"status": "ignored", "reason": "no_phone"}
+        logger.info(f"📞 Telefone: {phone}")
+        logger.info(f"💬 Mensagem: {message_text}")
+        logger.info(f"👤 De mim: {from_me} | Grupo: {is_group}")
         
-        if not message_text:
-            logger.warning("⚠️ IGNORADO: Sem texto")
-            return {"status": "ignored", "reason": "no_text"}
-        
+        # Validações
         if from_me:
-            logger.warning("⚠️ IGNORADO: Mensagem própria")
+            logger.info("⚠️ Ignorado: mensagem própria")
             return {"status": "ignored", "reason": "from_me"}
         
         if is_group:
-            logger.warning("⚠️ IGNORADO: Grupo")
+            logger.info("⚠️ Ignorado: mensagem de grupo")
             return {"status": "ignored", "reason": "group"}
         
-        # VARIÁVEL DE RESPOSTA (SEMPRE DEFINIDA)
-        response_text = None
+        if not phone:
+            logger.warning("⚠️ Ignorado: sem telefone")
+            return {"status": "ignored", "reason": "no_phone"}
         
-        # TENTAR IA
-        logger.info("🤖 Tentando IA...")
-        try:
-            completion = client.chat.completions.create(
-                model="gpt-4.1-mini",
-                messages=[
-                    {"role": "system", "content": "Você é Ângela, atendente da SUNLUX ENERGIA. Seja educada, breve e profissional."},
-                    {"role": "user", "content": message_text}
-                ],
-                max_tokens=150
-            )
-            response_text = completion.choices[0].message.content
-            logger.info(f"✅ IA OK: {response_text[:50]}...")
-        except Exception as e:
-            error_str = str(e)
-            if "401" in error_str or "Incorrect API key" in error_str:
-                logger.error("❌ IA ERRO 401: API Key inválida")
-            else:
-                logger.error(f"❌ IA ERRO: {error_str[:100]}")
-            response_text = None
+        if not message_text or message_text.strip() == "":
+            logger.warning("⚠️ Ignorado: sem texto")
+            return {"status": "ignored", "reason": "no_text"}
         
-        # FALLBACK GARANTIDO
-        if not response_text:
-            response_text = FALLBACK_MESSAGE
-            logger.info("💡 USANDO FALLBACK")
+        # Processar mensagem
+        logger.info("🔄 Processando mensagem...")
         
-        # ENVIAR (SEMPRE TENTA)
-        logger.info("📨 Enviando resposta...")
-        result = send_whatsapp_message(phone, response_text)
+        # Tentar obter resposta da IA
+        ai_response = get_ai_response(message_text)
         
-        if result["success"]:
-            logger.info("✅ CONCLUÍDO")
-            return {"status": "ok", "sent": True, "used_fallback": response_text == FALLBACK_MESSAGE}
-        else:
-            # ERRO NO ENVIO
-            if result["error_code"] == 403:
-                logger.error("❌ FALHA CRÍTICA: Client-Token inválido no Z-API")
-                return {"status": "error", "detail": "zapi_auth_failed", "error_code": 403}
-            else:
-                logger.error(f"❌ FALHA NO ENVIO: {result['error_type']}")
-                return {"status": "error", "detail": "send_failed", "error_type": result["error_type"]}
-    
+        # Se IA falhar, usar fallback
+        if not ai_response:
+            logger.warning("⚠️ IA falhou, usando fallback")
+            ai_response = FALLBACK_MSG
+        
+        # Enviar resposta
+        sent = send_whatsapp(phone, ai_response)
+        
+        if not sent:
+            logger.error("❌ Falha ao enviar mensagem")
+            return {"status": "error", "detail": "send_failed"}
+        
+        # Criar tarefa no ClickUp
+        task_name = f"Atendimento WhatsApp - {phone}"
+        task_description = f"""**Telefone:** {phone}
+**Mensagem:** {message_text}
+**Resposta:** {ai_response}
+**Data:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"""
+        
+        create_clickup_task(task_name, task_description, phone)
+        
+        logger.info("✅ ATENDIMENTO CONCLUÍDO COM SUCESSO")
+        logger.info("="*70)
+        
+        return {
+            "status": "success",
+            "phone": phone,
+            "message_sent": True,
+            "clickup_task_created": True
+        }
+        
     except Exception as e:
-        logger.error(f"❌ ERRO GERAL: {e}")
+        logger.error(f"❌ ERRO GERAL: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
         return {"status": "error", "detail": str(e)}
-    
-    finally:
-        logger.info("="*60)
 
-@app.on_event("startup")
-async def startup():
-    logger.info("🎬 Pronto")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
