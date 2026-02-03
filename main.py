@@ -22,17 +22,17 @@ def get_env(key):
 ZAPI_INSTANCE = get_env("ZAPI_INSTANCE") or get_env("INSTÂNCIA ZAPI")
 ZAPI_TOKEN = get_env("ZAPI_TOKEN")
 
-# --- AQUI ESTÁ A MÁGICA: CHAVE DIRETO NO CÓDIGO ---
-# Copiei do seu print. Isso IGNORA o Railway e força o funcionamento.
-CLIENT_TOKEN = "F2fb34e775b33455d9b75e6e5f2ca1daeS" 
+# --- SUA CHAVE NOVA (HARDCODED) ---
+# Essa é a chave que você acabou de gerar. Não mude!
+CLIENT_TOKEN = "F38393c3b6dc744ef84b0de693e92609eS"
 
 # URL da API
 API_URL = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
 
 @app.on_event("startup" )
 async def startup_check():
-    logger.info(f"🚀 INICIANDO AGENTE (V6 - HARDCODED)...")
-    logger.info(f"🔑 CLIENT_TOKEN FORÇADO: {CLIENT_TOKEN[:4]}... (Isso TEM que funcionar)")
+    logger.info(f"🚀 INICIANDO AGENTE (V7 - FINAL)...")
+    logger.info(f"🔑 CLIENT_TOKEN FIXO: {CLIENT_TOKEN[:4]}... (Confirmado!)")
     logger.info(f"ZAPI_INSTANCE: {'✅ ' + ZAPI_INSTANCE if ZAPI_INSTANCE else '❌ VAZIA'}")
 
 # --- FUNÇÃO DE ENVIO ---
@@ -63,7 +63,13 @@ async def enviar_resposta(telefone: str, texto: str):
 async def processar_mensagem(payload: Dict[str, Any]):
     try:
         telefone = payload.get('phone')
-        texto_msg = payload.get('text', {}).get('message', '') if isinstance(payload.get('text'), dict) else payload.get('text', '')
+        # Tenta pegar texto de várias formas possíveis
+        texto_msg = ""
+        if 'text' in payload and isinstance(payload['text'], dict):
+            texto_msg = payload['text'].get('message', '')
+        elif 'text' in payload:
+            texto_msg = str(payload['text'])
+            
         is_group = payload.get('isGroup', False)
         from_me = payload.get('fromMe', False)
         sender_name = payload.get('senderName', 'Usuário')
@@ -75,7 +81,7 @@ async def processar_mensagem(payload: Dict[str, Any]):
 
         logger.info(f"🧠 MENSAGEM DE {sender_name}: {texto_msg}")
         
-        resposta = f"Olá {sender_name}! Agora foi na marra! Recebi: '{texto_msg}'"
+        resposta = f"Olá {sender_name}! Teste final com token fixo. Recebi: '{texto_msg}'"
         await enviar_resposta(telefone, resposta)
 
     except Exception as e:
@@ -86,7 +92,9 @@ async def processar_mensagem(payload: Dict[str, Any]):
 async def webhook(request: Request, background_tasks: BackgroundTasks):
     try:
         body = await request.json()
+        # Ignora status de entrega para não travar
         if body.get('status') in ['SENT', 'DELIVERED', 'READ']: return Response(status_code=200)
+        
         background_tasks.add_task(processar_mensagem, body)
         return Response(status_code=200)
     except Exception:
@@ -94,4 +102,4 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
 @app.get("/")
 def health():
-    return {"status": "online", "version": "v6-hardcoded"}
+    return {"status": "online", "version": "v7-final"}
