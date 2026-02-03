@@ -1,3 +1,5 @@
-ubuntu@sandbox:~ $ cp /home/ubuntu/agente_final/requirements.txt /home/ubuntu/agente_final_v2/
-
-ubuntu@sandbox:~ $
+fastapi==0.109.0
+uvicorn==0.27.0
+requests==2.31.0
+openai==1.12.0
+python-dotenv==1.0.0
